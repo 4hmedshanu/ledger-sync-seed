@@ -42,8 +42,11 @@ class TransferCategoryTest {
 
         InMemoryLedgerStore store = ingest(debit, credit);
 
-        NormalizedTxn debitLeg = transactionFor(store, "4821");
-        NormalizedTxn creditLeg = transactionFor(store, "9075");
+        NormalizedTxn debitLeg =
+                transactionFor(store, "4821");
+
+        NormalizedTxn creditLeg =
+                transactionFor(store, "9075");
 
         assertEquals(
                 Category.TRANSFER,
@@ -75,15 +78,72 @@ class TransferCategoryTest {
                 store.all().get(0).category());
     }
 
+    @Test
+    void matchesTransferWhenLegsArriveSeparately()
+            throws Exception {
+
+        String debit = json(
+                "m-separate-debit",
+                "AD-HDFCBK-S",
+                "2026-07-05T11:00:00+05:30",
+                "Rs 8,000.00 debited from a/c **4821 "
+                        + "on 05-07-26 at 11:00 "
+                        + "to IMPS/P2A/PARAG KAPOOR. "
+                        + "Avl Bal: Rs.80,071.04.");
+
+        String credit = json(
+                "m-separate-credit",
+                "VM-ICICIB-T",
+                "2026-07-05T11:02:00+05:30",
+                "Dear Customer, Acct XX9075 is credited "
+                        + "with INR 8000.00 "
+                        + "on 05/07/2026 11:02. "
+                        + "Info: IMPS/P2A/PARAG KAPOOR. "
+                        + "Avl Bal Rs.57,757.25 -ICICI Bank");
+
+        InMemoryLedgerStore store =
+                new InMemoryLedgerStore();
+
+        IngestService service =
+                new IngestService(new Parsers(), store);
+
+        Path firstCorpus =
+                temporaryDirectory.resolve("first.jsonl");
+
+        Files.writeString(firstCorpus, debit);
+        service.ingestFile(firstCorpus);
+
+        assertEquals(
+                Category.SPEND,
+                transactionFor(store, "4821").category());
+
+        Path secondCorpus =
+                temporaryDirectory.resolve("second.jsonl");
+
+        Files.writeString(secondCorpus, credit);
+        service.ingestFile(secondCorpus);
+
+        assertEquals(
+                Category.TRANSFER,
+                transactionFor(store, "4821").category());
+
+        assertEquals(
+                Category.TRANSFER,
+                transactionFor(store, "9075").category());
+    }
+
     private InMemoryLedgerStore ingest(String... jsonLines)
             throws Exception {
 
         Path corpus =
-                temporaryDirectory.resolve("transfer-corpus.jsonl");
+                temporaryDirectory.resolve(
+                        "transfer-corpus.jsonl");
 
         Files.writeString(
                 corpus,
-                String.join(System.lineSeparator(), jsonLines));
+                String.join(
+                        System.lineSeparator(),
+                        jsonLines));
 
         InMemoryLedgerStore store =
                 new InMemoryLedgerStore();
