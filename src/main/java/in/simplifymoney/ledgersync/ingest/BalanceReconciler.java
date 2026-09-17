@@ -19,7 +19,7 @@ import java.util.TreeSet;
  */
 public final class BalanceReconciler {
 
-    private static final String UNKNOWN_MERCHANT =
+    public static final String UNKNOWN_MERCHANT  =
             "UNATTRIBUTED BALANCE MOVEMENT";
 
     public List<NormalizedTxn> inferMissingTransactions(

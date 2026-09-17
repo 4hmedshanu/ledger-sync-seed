@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import in.simplifymoney.ledgersync.ingest.BalanceReconciler;
 
 /**
  * Creates ledger, summary and reconciliation reports.
@@ -177,8 +178,68 @@ public final class Reports {
     public static Map<String, Object> reconciliation(
             List<NormalizedTxn> ledger) {
 
-        throw new UnsupportedOperationException(
-                "reconciliation is not implemented");
+        List<Object> discrepancies = ledger.stream()
+                .filter(transaction ->
+                        BalanceReconciler.UNKNOWN_MERCHANT
+                                .equals(
+                                        transaction.merchant()))
+                .sorted((first, second) -> {
+                    int accountComparison =
+                            first.accountLast4()
+                                    .compareTo(
+                                            second.accountLast4());
+
+                    if (accountComparison != 0) {
+                        return accountComparison;
+                    }
+
+                    return first.occurredAt()
+                            .compareTo(
+                                    second.occurredAt());
+                })
+                .map(transaction -> {
+                    Map<String, Object> discrepancy =
+                            new LinkedHashMap<>();
+
+                    discrepancy.put(
+                            "account_last4",
+                            transaction.accountLast4());
+
+                    discrepancy.put(
+                            "occurred_at",
+                            transaction.occurredAt()
+                                    .toString());
+
+                    discrepancy.put(
+                            "amount",
+                            transaction.amount()
+                                    .toPlainString());
+
+                    String direction =
+                            transaction.direction()
+                                    .name()
+                                    .toLowerCase();
+
+                    discrepancy.put(
+                            "note",
+                            "Bank balance checkpoints imply "
+                                    + "an unalerted "
+                                    + direction
+                                    + "; exact time and merchant "
+                                    + "are unknown.");
+
+                    return (Object) discrepancy;
+                })
+                .toList();
+
+        Map<String, Object> document =
+                new LinkedHashMap<>();
+
+        document.put(
+                "discrepancies",
+                discrepancies);
+
+        return document;
     }
 
     public static Map<Category, BigDecimal> byCategory(
