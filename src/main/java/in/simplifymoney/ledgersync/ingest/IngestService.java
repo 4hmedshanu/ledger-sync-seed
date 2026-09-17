@@ -31,6 +31,9 @@ public final class IngestService {
     private final Parsers parsers;
     private final LedgerStore store;
 
+    private final List<ParsedTxn> observedTransactions =
+            new ArrayList<>();
+
     public IngestService(Parsers parsers, LedgerStore store) {
         this.parsers = parsers;
         this.store = store;
@@ -53,9 +56,18 @@ public final class IngestService {
                 continue;
             }
 
-            transactions.add(
-                    toTransaction(parsedTransaction.get()));
+            ParsedTxn parsed = parsedTransaction.get();
+
+            observedTransactions.add(parsed);
+            transactions.add(toTransaction(parsed));
         }
+
+        BalanceReconciler balanceReconciler =
+                new BalanceReconciler();
+
+        transactions.addAll(
+                balanceReconciler.inferMissingTransactions(
+                        observedTransactions));
 
         TransferMatcher transferMatcher =
                 new TransferMatcher();
