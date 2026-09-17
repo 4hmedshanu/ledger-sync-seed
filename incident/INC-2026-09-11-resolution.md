@@ -1,0 +1,5 @@
+What broke: Whole-rupee transaction amounts such as Rs.5 were skipped, so the parser incorrectly selected the later available balance of Rs.92,213.10.
+How we found it: We reproduced the customer message in a regression test; the old suite stayed green because it only tested transaction amounts containing decimal points.
+Who was affected: The corpus contains 28 affected message uploads representing 19 unique transactions where a whole-rupee amount appears before a decimal balance.
+What we fixed: Amount extraction now accepts whole-rupee and decimal transaction amounts while continuing to select the first valid monetary amount.
+Why it cannot recur: The exact Rs.5 production message is covered by a regression test, the full suite passes, and corpus totals now reconcile exactly to 257 transactions.
