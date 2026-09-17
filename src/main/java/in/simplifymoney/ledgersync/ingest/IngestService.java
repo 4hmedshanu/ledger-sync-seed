@@ -41,6 +41,9 @@ public final class IngestService {
         long countBefore = store.count();
         int skipped = 0;
 
+        List<NormalizedTxn> transactions =
+                new ArrayList<>(store.all());
+
         for (RawMessage message : messages) {
             Optional<ParsedTxn> parsedTransaction =
                     parsers.parse(message);
@@ -50,7 +53,20 @@ public final class IngestService {
                 continue;
             }
 
-            store.save(toTransaction(parsedTransaction.get()));
+            transactions.add(
+                    toTransaction(parsedTransaction.get()));
+        }
+
+        TransferMatcher transferMatcher =
+                new TransferMatcher();
+
+        List<NormalizedTxn> categorizedTransactions =
+                transferMatcher.markTransfers(transactions);
+
+        for (NormalizedTxn transaction :
+                categorizedTransactions) {
+
+            store.save(transaction);
         }
 
         int transactionsWritten = Math.toIntExact(

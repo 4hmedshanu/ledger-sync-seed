@@ -1,5 +1,6 @@
 package in.simplifymoney.ledgersync.store;
 
+import in.simplifymoney.ledgersync.model.Category;
 import in.simplifymoney.ledgersync.model.NormalizedTxn;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,7 +37,9 @@ public final class InMemoryLedgerStore implements LedgerStore {
                     existing.occurredAt(),
                     existing.direction(),
                     existing.amount(),
-                    existing.category(),
+                    mergeCategory(
+                            existing.category(),
+                            transaction.category()),
                     existing.merchant(),
                     new ArrayList<>(messageIds));
 
@@ -45,6 +48,23 @@ public final class InMemoryLedgerStore implements LedgerStore {
         }
 
         rows.add(transaction);
+    }
+
+    private Category mergeCategory(
+            Category existing,
+            Category incoming) {
+
+        if (existing == Category.TRANSFER
+                || incoming == Category.TRANSFER) {
+            return Category.TRANSFER;
+        }
+
+        if (existing == Category.MICRO
+                || incoming == Category.MICRO) {
+            return Category.MICRO;
+        }
+
+        return existing;
     }
 
     private boolean sameTransaction(
