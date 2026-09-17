@@ -9,11 +9,13 @@ import in.simplifymoney.ledgersync.parse.ParsedTxn;
 import in.simplifymoney.ledgersync.parse.Parsers;
 import in.simplifymoney.ledgersync.store.LedgerStore;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -22,6 +24,9 @@ import java.util.stream.Stream;
  * Reads a corpus of raw messages and puts transactions in the ledger.
  */
 public final class IngestService {
+
+    private static final BigDecimal MICRO_LIMIT =
+            new BigDecimal("100.00");
 
     private final Parsers parsers;
     private final LedgerStore store;
@@ -85,10 +90,7 @@ public final class IngestService {
     }
 
     private NormalizedTxn toTransaction(ParsedTxn parsed) {
-        Category category =
-                parsed.direction() == Direction.DEBIT
-                        ? Category.SPEND
-                        : Category.INCOME;
+        Category category = categoryFor(parsed);
 
         return new NormalizedTxn(
                 parsed.accountLast4(),
@@ -98,6 +100,27 @@ public final class IngestService {
                 category,
                 parsed.merchant(),
                 List.of(parsed.sourceMessageId()));
+    }
+
+    private Category categoryFor(ParsedTxn parsed) {
+        if (parsed.direction() == Direction.CREDIT) {
+            return Category.INCOME;
+        }
+
+        String merchant = parsed.merchant()
+                .trim()
+                .toUpperCase(Locale.ROOT);
+
+        boolean isUpi = merchant.startsWith("UPI");
+
+        boolean isWithinMicroLimit =
+                parsed.amount().compareTo(MICRO_LIMIT) <= 0;
+
+        if (isUpi && isWithinMicroLimit) {
+            return Category.MICRO;
+        }
+
+        return Category.SPEND;
     }
 
     public record Stats(
