@@ -8,13 +8,7 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * ICICI Bank SMS.
- *
- * TODO(ops): this only reads the "Dear Customer, Acct XX.... is debited with"
- * shape. There is at least one other ICICI format in the corpus that falls
- * straight through and is lost. Finish this.
- */
+/** Parses supported ICICI Bank SMS transaction formats. */
 public final class IciciSmsParser implements MessageParser {
 
     public static final String SENDER = "VM-ICICIB-T";
@@ -24,23 +18,82 @@ public final class IciciSmsParser implements MessageParser {
                     + "on (?<when>\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2})\\. "
                     + "Info: (?<merchant>[^.]+)\\.");
 
+    private static final Pattern V2 = Pattern.compile(
+            "\\AICICI Bank Acct XX(?<acct>\\d{4}) "
+                    + "(?<dir>Dr|Cr) "
+                    + "(?:Rs\\.?|INR)\\s*"
+                    + "[0-9][0-9,]*(?:\\.[0-9]{1,2})? "
+                    + "on (?<when>\\d{2}-[A-Za-z]{3}-\\d{4} "
+                    + "\\d{2}:\\d{2}); "
+                    + "(?<merchant>.+?) ref no \\d+\\. "
+                    + "BalAvl\\s+(?:Rs\\.?|INR)\\s*"
+                    + "[0-9][0-9,]*(?:\\.[0-9]{1,2})?\\s*\\z",
+            Pattern.CASE_INSENSITIVE);
+
     @Override
-    public boolean supports(RawMessage m) {
-        return "sms".equals(m.channel()) && SENDER.equals(m.sender());
+    public boolean supports(RawMessage message) {
+        return "sms".equals(message.channel())
+                && SENDER.equals(message.sender());
     }
 
     @Override
-    public Optional<ParsedTxn> parse(RawMessage m) {
-        Matcher v1 = V1.matcher(m.body());
-        if (!v1.find()) return Optional.empty();
+    public Optional<ParsedTxn> parse(RawMessage message) {
+        Matcher v1 = V1.matcher(message.body());
 
-        BigDecimal amount = Amounts.first(m.body());
-        OffsetDateTime at = Dates.ist(v1.group("when"));
-        if (amount == null || at == null) return Optional.empty();
+        if (v1.find()) {
+            Direction direction =
+                    "debited".equals(v1.group("dir"))
+                            ? Direction.DEBIT
+                            : Direction.CREDIT;
 
-        Direction d = "debited".equals(v1.group("dir")) ? Direction.DEBIT : Direction.CREDIT;
-        return Optional.of(new ParsedTxn(v1.group("acct"), at, d, amount,
-                v1.group("merchant").trim(), Amounts.statedBalance(m.body()),
-                m.messageId()));
+            return build(
+                    message,
+                    v1.group("acct"),
+                    v1.group("when"),
+                    direction,
+                    v1.group("merchant"));
+        }
+
+        Matcher v2 = V2.matcher(message.body());
+
+        if (v2.matches()) {
+            Direction direction =
+                    "Dr".equalsIgnoreCase(v2.group("dir"))
+                            ? Direction.DEBIT
+                            : Direction.CREDIT;
+
+            return build(
+                    message,
+                    v2.group("acct"),
+                    v2.group("when"),
+                    direction,
+                    v2.group("merchant"));
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<ParsedTxn> build(
+            RawMessage message,
+            String account,
+            String when,
+            Direction direction,
+            String merchant) {
+
+        BigDecimal amount = Amounts.first(message.body());
+        OffsetDateTime occurredAt = Dates.ist(when);
+
+        if (amount == null || occurredAt == null) {
+            return Optional.empty();
+        }
+
+        return Optional.of(new ParsedTxn(
+                account,
+                occurredAt,
+                direction,
+                amount,
+                merchant.trim(),
+                Amounts.statedBalance(message.body()),
+                message.messageId()));
     }
 }
