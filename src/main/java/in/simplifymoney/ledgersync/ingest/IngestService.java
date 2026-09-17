@@ -20,10 +20,6 @@ import java.util.stream.Stream;
 
 /**
  * Reads a corpus of raw messages and puts transactions in the ledger.
- *
- * This is the naive version. It parses each message on its own and saves
- * whatever comes back. It does not ask whether two messages describe the same
- * transaction, and it decides the category from the direction alone.
  */
 public final class IngestService {
 
@@ -37,42 +33,76 @@ public final class IngestService {
 
     public Stats ingestFile(Path corpus) throws IOException {
         List<RawMessage> messages = readCorpus(corpus);
-        int parsed = 0;
+        long countBefore = store.count();
         int skipped = 0;
-        for (RawMessage m : messages) {
-            Optional<ParsedTxn> p = parsers.parse(m);
-            if (p.isEmpty()) {
+
+        for (RawMessage message : messages) {
+            Optional<ParsedTxn> parsedTransaction =
+                    parsers.parse(message);
+
+            if (parsedTransaction.isEmpty()) {
                 skipped++;
                 continue;
             }
-            store.save(toTransaction(p.get()));
-            parsed++;
+
+            store.save(toTransaction(parsedTransaction.get()));
         }
-        return new Stats(messages.size(), parsed, skipped);
+
+        int transactionsWritten = Math.toIntExact(
+                store.count() - countBefore);
+
+        return new Stats(
+                messages.size(),
+                transactionsWritten,
+                skipped);
     }
 
-    public static List<RawMessage> readCorpus(Path corpus) throws IOException {
+    public static List<RawMessage> readCorpus(Path corpus)
+            throws IOException {
+
         List<RawMessage> out = new ArrayList<>();
+
         try (Stream<String> lines = Files.lines(corpus)) {
-            for (String line : (Iterable<String>) lines.filter(s -> !s.isBlank())::iterator) {
-                Map<String, Object> o = Json.parseObject(line);
+            for (String line :
+                    (Iterable<String>) lines
+                            .filter(s -> !s.isBlank())::iterator) {
+
+                Map<String, Object> object =
+                        Json.parseObject(line);
+
                 out.add(new RawMessage(
-                        (String) o.get("message_id"),
-                        (String) o.get("channel"),
-                        (String) o.get("sender"),
-                        OffsetDateTime.parse((String) o.get("received_at")),
-                        (String) o.get("device_id"),
-                        (String) o.get("body")));
+                        (String) object.get("message_id"),
+                        (String) object.get("channel"),
+                        (String) object.get("sender"),
+                        OffsetDateTime.parse(
+                                (String) object.get("received_at")),
+                        (String) object.get("device_id"),
+                        (String) object.get("body")));
             }
         }
+
         return out;
     }
 
-    private NormalizedTxn toTransaction(ParsedTxn p) {
-        Category c = p.direction() == Direction.DEBIT ? Category.SPEND : Category.INCOME;
-        return new NormalizedTxn(p.accountLast4(), p.occurredAt(), p.direction(),
-                p.amount(), c, p.merchant(), List.of(p.sourceMessageId()));
+    private NormalizedTxn toTransaction(ParsedTxn parsed) {
+        Category category =
+                parsed.direction() == Direction.DEBIT
+                        ? Category.SPEND
+                        : Category.INCOME;
+
+        return new NormalizedTxn(
+                parsed.accountLast4(),
+                parsed.occurredAt(),
+                parsed.direction(),
+                parsed.amount(),
+                category,
+                parsed.merchant(),
+                List.of(parsed.sourceMessageId()));
     }
 
-    public record Stats(int messagesRead, int transactionsWritten, int messagesSkipped) {}
+    public record Stats(
+            int messagesRead,
+            int transactionsWritten,
+            int messagesSkipped) {
+    }
 }
