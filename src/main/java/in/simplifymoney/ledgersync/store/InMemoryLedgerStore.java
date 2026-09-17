@@ -4,15 +4,79 @@ import in.simplifymoney.ledgersync.model.NormalizedTxn;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.TreeSet;
 
-/** Used by SelfCheck and by tests. Keeps everything it is given. */
+/**
+ * In-memory ledger store.
+ *
+ * Saving evidence for an existing transaction merges its message IDs instead
+ * of creating another ledger row.
+ */
 public final class InMemoryLedgerStore implements LedgerStore {
 
-    private final List<NormalizedTxn> rows = new ArrayList<>();
+    private final List<NormalizedTxn> rows =
+            new ArrayList<>();
 
-    @Override public void save(NormalizedTxn txn) { rows.add(txn); }
+    @Override
+    public void save(NormalizedTxn transaction) {
+        for (int index = 0; index < rows.size(); index++) {
+            NormalizedTxn existing = rows.get(index);
 
-    @Override public List<NormalizedTxn> all() { return Collections.unmodifiableList(rows); }
+            if (!sameTransaction(existing, transaction)) {
+                continue;
+            }
 
-    @Override public long count() { return rows.size(); }
+            TreeSet<String> messageIds = new TreeSet<>();
+            messageIds.addAll(existing.sourceMessageIds());
+            messageIds.addAll(transaction.sourceMessageIds());
+
+            NormalizedTxn merged = new NormalizedTxn(
+                    existing.accountLast4(),
+                    existing.occurredAt(),
+                    existing.direction(),
+                    existing.amount(),
+                    existing.category(),
+                    existing.merchant(),
+                    new ArrayList<>(messageIds));
+
+            rows.set(index, merged);
+            return;
+        }
+
+        rows.add(transaction);
+    }
+
+    private boolean sameTransaction(
+            NormalizedTxn first,
+            NormalizedTxn second) {
+
+        return first.accountLast4()
+                .equals(second.accountLast4())
+                && first.occurredAt()
+                .equals(second.occurredAt())
+                && first.direction()
+                == second.direction()
+                && first.amount()
+                .compareTo(second.amount()) == 0
+                && normalizeMerchant(first.merchant())
+                .equals(normalizeMerchant(second.merchant()));
+    }
+
+    private String normalizeMerchant(String merchant) {
+        return merchant
+                .trim()
+                .replaceAll("\\s+", " ")
+                .toUpperCase(Locale.ROOT);
+    }
+
+    @Override
+    public List<NormalizedTxn> all() {
+        return Collections.unmodifiableList(rows);
+    }
+
+    @Override
+    public long count() {
+        return rows.size();
+    }
 }
