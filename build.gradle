@@ -66,3 +66,13 @@ tasks.register('documentStore', JavaExec) {
     classpath =
             sourceSets.main.runtimeClasspath
 }
+
+tasks.register('documentBenchmark', JavaExec) {
+    group = 'verification'
+    description =
+            'Benchmark MongoDB queries at 100,000 transactions'
+    mainClass =
+            'in.simplifymoney.ledgersync.MongoBenchmarkApp'
+    classpath =
+            sourceSets.main.runtimeClasspath
+}
