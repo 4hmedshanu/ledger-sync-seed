@@ -3,19 +3,24 @@ package in.simplifymoney.ledgersync.store;
 import in.simplifymoney.ledgersync.model.Category;
 import in.simplifymoney.ledgersync.model.NormalizedTxn;
 import java.math.BigDecimal;
+import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
  * Compares the logical SQL ledger with the document store.
  *
- * The checker validates every message-to-transaction mapping, every
- * transaction field and every category total. It reports exact values instead
- * of only comparing row counts.
+ * Transactions are primarily matched by their logical identity. Message-ID
+ * lookup is checked only when that message belongs to exactly one SQL
+ * transaction, because reconciliation evidence may be shared.
  */
 public final class ConsistencyChecker {
 
@@ -37,10 +42,14 @@ public final class ConsistencyChecker {
         List<NormalizedTxn> sqlTransactions =
                 sql.all();
 
-        List<Divergence> differences =
-                new ArrayList<>();
+        Set<Divergence> differences =
+                new LinkedHashSet<>();
 
-        checkMessageMappings(
+        checkTransactions(
+                sqlTransactions,
+                differences);
+
+        checkUniqueMessageMappings(
                 sqlTransactions,
                 differences);
 
@@ -51,40 +60,271 @@ public final class ConsistencyChecker {
         return List.copyOf(differences);
     }
 
-    private void checkMessageMappings(
+    private void checkTransactions(
             List<NormalizedTxn> sqlTransactions,
-            List<Divergence> differences) {
+            Set<Divergence> differences) {
 
-        for (NormalizedTxn sqlTransaction :
+        Map<AccountMonth, List<NormalizedTxn>> groups =
+                new LinkedHashMap<>();
+
+        for (NormalizedTxn transaction :
                 sqlTransactions) {
 
-            for (String messageId :
-                    sqlTransaction.sourceMessageIds()) {
+            AccountMonth key =
+                    new AccountMonth(
+                            transaction.accountLast4(),
+                            YearMonth.from(
+                                    transaction.occurredAt()));
 
-                Optional<NormalizedTxn> documentTransaction =
-                        documents.byMessageId(messageId);
+            groups.computeIfAbsent(
+                            key,
+                            ignored -> new ArrayList<>())
+                    .add(transaction);
+        }
 
-                if (documentTransaction.isEmpty()) {
-                    differences.add(new Divergence(
-                            "message mapping " + messageId,
-                            describe(sqlTransaction),
-                            "<missing>"));
+        for (Map.Entry<AccountMonth,
+                List<NormalizedTxn>> entry :
+                groups.entrySet()) {
+
+            AccountMonth key = entry.getKey();
+
+            List<NormalizedTxn> storedTransactions =
+                    documents.forAccountMonth(
+                            key.accountLast4(),
+                            key.month());
+
+            boolean[] matched =
+                    new boolean[storedTransactions.size()];
+
+            for (NormalizedTxn sqlTransaction :
+                    entry.getValue()) {
+
+                int matchIndex =
+                        findIdentityMatch(
+                                sqlTransaction,
+                                storedTransactions,
+                                matched);
+
+                if (matchIndex >= 0) {
+                    matched[matchIndex] = true;
+
+                    NormalizedTxn stored =
+                            storedTransactions.get(
+                                    matchIndex);
+
+                    if (!sameContent(
+                            sqlTransaction,
+                            stored)) {
+
+                        addTransactionDifference(
+                                sqlTransaction,
+                                stored,
+                                differences);
+                    }
 
                     continue;
                 }
 
-                NormalizedTxn stored =
-                        documentTransaction.get();
+                int relatedIndex =
+                        findBestEvidenceMatch(
+                                sqlTransaction,
+                                storedTransactions,
+                                matched);
 
-                if (!sameContent(
-                        sqlTransaction,
-                        stored)) {
+                if (relatedIndex >= 0) {
+                    matched[relatedIndex] = true;
 
-                    differences.add(new Divergence(
+                    addTransactionDifference(
+                            sqlTransaction,
+                            storedTransactions.get(
+                                    relatedIndex),
+                            differences);
+                } else {
+                    differences.add(
+                            new Divergence(
+                                    "missing transaction "
+                                            + transactionLabel(
+                                            sqlTransaction),
+                                    describe(sqlTransaction),
+                                    "<missing>"));
+                }
+            }
+
+            for (int index = 0;
+                 index < storedTransactions.size();
+                 index++) {
+
+                if (!matched[index]) {
+                    NormalizedTxn extra =
+                            storedTransactions.get(index);
+
+                    differences.add(
+                            new Divergence(
+                                    "extra transaction "
+                                            + transactionLabel(extra),
+                                    "<missing>",
+                                    describe(extra)));
+                }
+            }
+        }
+    }
+
+    private int findIdentityMatch(
+            NormalizedTxn expected,
+            List<NormalizedTxn> candidates,
+            boolean[] matched) {
+
+        for (int index = 0;
+             index < candidates.size();
+             index++) {
+
+            if (!matched[index]
+                    && sameIdentity(
+                    expected,
+                    candidates.get(index))) {
+
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private int findBestEvidenceMatch(
+            NormalizedTxn expected,
+            List<NormalizedTxn> candidates,
+            boolean[] matched) {
+
+        int bestIndex = -1;
+        int bestSharedCount = 0;
+
+        for (int index = 0;
+             index < candidates.size();
+             index++) {
+
+            if (matched[index]) {
+                continue;
+            }
+
+            int sharedCount =
+                    sharedEvidenceCount(
+                            expected,
+                            candidates.get(index));
+
+            if (sharedCount > bestSharedCount) {
+                bestSharedCount = sharedCount;
+                bestIndex = index;
+            }
+        }
+
+        return bestIndex;
+    }
+
+    private int sharedEvidenceCount(
+            NormalizedTxn first,
+            NormalizedTxn second) {
+
+        Set<String> secondIds =
+                new TreeSet<>(
+                        second.sourceMessageIds());
+
+        int count = 0;
+
+        for (String messageId :
+                first.sourceMessageIds()) {
+
+            if (secondIds.contains(messageId)) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private void addTransactionDifference(
+            NormalizedTxn expected,
+            NormalizedTxn stored,
+            Set<Divergence> differences) {
+
+        if (expected.sourceMessageIds().isEmpty()) {
+            differences.add(
+                    new Divergence(
+                            "transaction "
+                                    + transactionLabel(expected),
+                            describe(expected),
+                            describe(stored)));
+
+            return;
+        }
+
+        for (String messageId :
+                expected.sourceMessageIds()) {
+
+            differences.add(
+                    new Divergence(
                             "transaction for message "
                                     + messageId,
-                            describe(sqlTransaction),
+                            describe(expected),
                             describe(stored)));
+        }
+    }
+
+    private void checkUniqueMessageMappings(
+            List<NormalizedTxn> sqlTransactions,
+            Set<Divergence> differences) {
+
+        Map<String, Integer> messageUsage =
+                new HashMap<>();
+
+        for (NormalizedTxn transaction :
+                sqlTransactions) {
+
+            for (String messageId :
+                    transaction.sourceMessageIds()) {
+
+                messageUsage.merge(
+                        messageId,
+                        1,
+                        Integer::sum);
+            }
+        }
+
+        for (NormalizedTxn expected :
+                sqlTransactions) {
+
+            for (String messageId :
+                    expected.sourceMessageIds()) {
+
+                // Shared reconciliation evidence cannot map
+                // unambiguously to one transaction.
+                if (messageUsage.get(messageId) != 1) {
+                    continue;
+                }
+
+                var stored =
+                        documents.byMessageId(messageId);
+
+                if (stored.isEmpty()) {
+                    differences.add(
+                            new Divergence(
+                                    "message mapping "
+                                            + messageId,
+                                    describe(expected),
+                                    "<missing>"));
+
+                    continue;
+                }
+
+                if (!sameContent(
+                        expected,
+                        stored.get())) {
+
+                    differences.add(
+                            new Divergence(
+                                    "transaction for message "
+                                            + messageId,
+                                    describe(expected),
+                                    describe(stored.get())));
                 }
             }
         }
@@ -92,7 +332,7 @@ public final class ConsistencyChecker {
 
     private void checkCategoryTotals(
             List<NormalizedTxn> sqlTransactions,
-            List<Divergence> differences) {
+            Set<Divergence> differences) {
 
         TreeSet<String> accounts =
                 new TreeSet<>();
@@ -126,13 +366,14 @@ public final class ConsistencyChecker {
                 if (sqlTotal.compareTo(
                         documentTotal) != 0) {
 
-                    differences.add(new Divergence(
-                            "category total "
-                                    + account
-                                    + "/"
-                                    + category.name(),
-                            sqlTotal.toPlainString(),
-                            documentTotal.toPlainString()));
+                    differences.add(
+                            new Divergence(
+                                    "category total "
+                                            + account
+                                            + "/"
+                                            + category.name(),
+                                    sqlTotal.toPlainString(),
+                                    documentTotal.toPlainString()));
                 }
             }
         }
@@ -161,7 +402,7 @@ public final class ConsistencyChecker {
         return total.setScale(2);
     }
 
-    private boolean sameContent(
+    private boolean sameIdentity(
             NormalizedTxn first,
             NormalizedTxn second) {
 
@@ -173,6 +414,16 @@ public final class ConsistencyChecker {
                 == second.direction()
                 && first.amount()
                 .compareTo(second.amount()) == 0
+                && normalizeMerchant(first.merchant())
+                .equals(normalizeMerchant(
+                        second.merchant()));
+    }
+
+    private boolean sameContent(
+            NormalizedTxn first,
+            NormalizedTxn second) {
+
+        return sameIdentity(first, second)
                 && first.category()
                 == second.category()
                 && Objects.equals(
@@ -182,6 +433,31 @@ public final class ConsistencyChecker {
                 first.sourceMessageIds())
                 .equals(new TreeSet<>(
                         second.sourceMessageIds()));
+    }
+
+    private String normalizeMerchant(
+            String merchant) {
+
+        if (merchant == null) {
+            return "";
+        }
+
+        return merchant
+                .trim()
+                .replaceAll("\\s+", " ")
+                .toUpperCase(Locale.ROOT);
+    }
+
+    private String transactionLabel(
+            NormalizedTxn transaction) {
+
+        return transaction.accountLast4()
+                + "/"
+                + transaction.occurredAt()
+                + "/"
+                + transaction.amount()
+                .setScale(2)
+                .toPlainString();
     }
 
     private String describe(
@@ -204,6 +480,11 @@ public final class ConsistencyChecker {
                 + ", source_message_ids="
                 + new TreeSet<>(
                 transaction.sourceMessageIds());
+    }
+
+    private record AccountMonth(
+            String accountLast4,
+            YearMonth month) {
     }
 
     /**

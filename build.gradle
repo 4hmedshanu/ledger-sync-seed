@@ -56,3 +56,13 @@ tasks.register('selfCheck', JavaExec) {
     classpath =
             sourceSets.main.runtimeClasspath
 }
+
+tasks.register('documentStore', JavaExec) {
+    group = 'application'
+    description =
+            'Run MongoDB backfill or consistency check'
+    mainClass =
+            'in.simplifymoney.ledgersync.DocumentStoreApp'
+    classpath =
+            sourceSets.main.runtimeClasspath
+}

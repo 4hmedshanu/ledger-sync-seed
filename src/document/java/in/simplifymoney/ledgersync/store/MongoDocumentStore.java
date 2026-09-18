@@ -86,10 +86,9 @@ public final class MongoDocumentStore
                         .name("account_month_newest"));
 
         transactions.createIndex(
-                ascending("source_message_ids"),
-                new IndexOptions()
-                        .name("message_lookup")
-                        .unique(true));
+        ascending("source_message_ids"),
+        new IndexOptions()
+                .name("message_lookup"));
     }
 
     @Override

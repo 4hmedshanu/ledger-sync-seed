@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.TreeSet;
+import java.time.YearMonth;
 
 /**
  * Moves the logical SQL ledger into the document store.
@@ -56,22 +57,40 @@ public final class Backfill {
                 skipped);
     }
 
-    private Optional<NormalizedTxn> findExisting(
-            NormalizedTxn transaction) {
+ private Optional<NormalizedTxn> findExisting(
+        NormalizedTxn transaction) {
 
-        for (String messageId :
-                transaction.sourceMessageIds()) {
+    YearMonth month =
+            YearMonth.from(
+                    transaction.occurredAt());
 
-            Optional<NormalizedTxn> existing =
-                    target.byMessageId(messageId);
+    return target.forAccountMonth(
+                    transaction.accountLast4(),
+                    month)
+            .stream()
+            .filter(existing ->
+                    sameIdentity(
+                            existing,
+                            transaction))
+            .findFirst();
+}
 
-            if (existing.isPresent()) {
-                return existing;
-            }
-        }
+private boolean sameIdentity(
+        NormalizedTxn first,
+        NormalizedTxn second) {
 
-        return Optional.empty();
-    }
+    return first.accountLast4()
+            .equals(second.accountLast4())
+            && first.occurredAt()
+            .equals(second.occurredAt())
+            && first.direction()
+            == second.direction()
+            && first.amount()
+            .compareTo(second.amount()) == 0
+            && normalizeMerchant(first.merchant())
+            .equals(normalizeMerchant(
+                    second.merchant()));
+}
 
     private boolean sameContent(
             NormalizedTxn first,
